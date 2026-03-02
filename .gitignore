@@ -1,0 +1,10 @@
+node_modules/
+.env
+.expo/
+f:\Connect\server\node_modules/
+mobile/node_modules/
+mobile/.expo/
+mobile/android/app/build/
+mobile/android/.gradle/
+mobile/android/build/
+ConnectApp.apk  
