@@ -16,63 +16,92 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
-// Store active users and their rooms
-const users = new Map();
+// username -> socket.id  (only online users)
+const onlineUsers = new Map();
+
+function broadcastOnlineUsers() {
+    io.emit('online-users', Array.from(onlineUsers.keys()));
+}
 
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
+    console.log('Socket connected:', socket.id);
 
-    socket.on('join-room', (roomId, userId) => {
-        socket.join(roomId);
-        users.set(socket.id, { roomId, userId });
-        console.log(`User ${userId} joined room ${roomId}`);
-
-        // Notify others in the room
-        socket.to(roomId).emit('user-connected', userId);
-    });
-
-    socket.on('send-message', (data) => {
-        const { roomId, message, userId, userName } = data;
-        io.to(roomId).emit('receive-message', {
-            text: message,
-            userId,
-            userName,
-            timestamp: new Date().toISOString()
-        });
-    });
-
-    // WebRTC Signaling
-    socket.on('offer', (data) => {
-        socket.to(data.target).emit('offer', {
-            sdp: data.sdp,
-            sender: socket.id
-        });
-    });
-
-    socket.on('answer', (data) => {
-        socket.to(data.target).emit('answer', {
-            sdp: data.sdp,
-            sender: socket.id
-        });
-    });
-
-    socket.on('ice-candidate', (data) => {
-        socket.to(data.target).emit('ice-candidate', {
-            candidate: data.candidate,
-            sender: socket.id
-        });
-    });
-
-    socket.on('disconnect', () => {
-        const user = users.get(socket.id);
-        if (user) {
-            socket.to(user.roomId).emit('user-disconnected', user.userId);
-            users.delete(socket.id);
+    // ── Registration ──────────────────────────────────────────────
+    socket.on('register', (username) => {
+        if (!username || typeof username !== 'string') {
+            return socket.emit('register-error', 'Invalid username.');
         }
-        console.log('User disconnected:', socket.id);
+        const trimmed = username.trim().toLowerCase();
+        if (onlineUsers.has(trimmed)) {
+            return socket.emit('register-error', 'Username already taken. Choose another.');
+        }
+        onlineUsers.set(trimmed, socket.id);
+        socket.data.username = trimmed;
+        socket.emit('register-success', trimmed);
+        broadcastOnlineUsers();
+        console.log(`Registered: ${trimmed}`);
+    });
+
+    // ── Direct calling (by username) ──────────────────────────────
+    socket.on('call-user', ({ targetUsername, sdp }) => {
+        const callerUsername = socket.data.username;
+        const targetSocketId = onlineUsers.get(targetUsername?.trim().toLowerCase());
+        if (!targetSocketId) {
+            return socket.emit('call-error', `User "${targetUsername}" is not online.`);
+        }
+        // Forward the incoming call notification to the target
+        io.to(targetSocketId).emit('incoming-call', {
+            from: callerUsername,
+            sdp
+        });
+    });
+
+    socket.on('call-accepted', ({ targetUsername, sdp }) => {
+        const targetSocketId = onlineUsers.get(targetUsername?.trim().toLowerCase());
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('call-answered', {
+                from: socket.data.username,
+                sdp
+            });
+        }
+    });
+
+    socket.on('call-declined', ({ targetUsername }) => {
+        const targetSocketId = onlineUsers.get(targetUsername?.trim().toLowerCase());
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('call-declined', { from: socket.data.username });
+        }
+    });
+
+    socket.on('end-call', ({ targetUsername }) => {
+        const targetSocketId = onlineUsers.get(targetUsername?.trim().toLowerCase());
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('call-ended', { from: socket.data.username });
+        }
+    });
+
+    // ── ICE candidates (addressed by username) ────────────────────
+    socket.on('ice-candidate', ({ targetUsername, candidate }) => {
+        const targetSocketId = onlineUsers.get(targetUsername?.trim().toLowerCase());
+        if (targetSocketId) {
+            io.to(targetSocketId).emit('ice-candidate', {
+                from: socket.data.username,
+                candidate
+            });
+        }
+    });
+
+    // ── Disconnect ────────────────────────────────────────────────
+    socket.on('disconnect', () => {
+        const username = socket.data.username;
+        if (username) {
+            onlineUsers.delete(username);
+            broadcastOnlineUsers();
+            console.log(`Disconnected: ${username}`);
+        }
     });
 });
 
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
